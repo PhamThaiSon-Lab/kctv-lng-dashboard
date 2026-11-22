@@ -372,6 +372,11 @@ a.btn { text-decoration: none; }
 .loader { width: 34px; height: 34px; border-radius: 50%; border: 4px solid var(--sky); border-top-color: var(--blue); animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (max-width: 900px) { .warn-strip { margin-inline: 16px; } }
+/* Trạng thái tàu theo giờ hiện tại */
+.badge-warn { background: var(--warn-bg); color: var(--warn); }
+.st-cell .badge { margin-left: 4px; }
+.status-note { display: block; margin-bottom: 4px; font-size: 12px; color: var(--warn); line-height: 1.35; }
+.hero-note { margin: 0 0 8px; padding: 6px 10px; border-radius: var(--r8); background: rgba(255,255,255,.14); font-size: 12.5px; }
 </style>
 </head>
 <body>
@@ -486,7 +491,7 @@ a.btn { text-decoration: none; }
 <section id="empty" class="empty"></section>
 
 <footer class="foot-bar">
-  <span>PV GAS · KCTV · Dashboard tồn kho bồn LNG v2.0.0 (build 14:49:02 21/11/2026)</span>
+  <span>PV GAS · KCTV · Dashboard tồn kho bồn LNG v2.0.0 (build 13:38:08 22/11/2026)</span>
   <span>Chỉ đọc Google Sheet; VHV nhập số liệu trên Sheet. Dashboard không ghi, không gửi dữ liệu đi đâu.</span>
 </footer>
 <script type="module">
@@ -856,8 +861,27 @@ function evaluateShips(rows, ctx) {
     s.X = prefix + main + suffix;
     s.level = assessmentLevel(s.X);
   }
+  for (const s of ships) s.now = s.K ? shipStatusNow(s, now) : null;
   return ships;
 }
+
+// ------------------------------------------------------------------ Trạng thái tàu theo GIỜ HIỆN TẠI (chỉ để hiển thị)
+// Yêu cầu bổ sung 22/11/2026: VHV chưa nhập giờ bơm xong thực tế (F) thì vẫn hiển thị đúng
+// Chưa bơm / Đang bơm / Đã bơm xong theo giờ hiện tại, giờ bắt đầu bơm (C) và giờ bơm xong dự kiến (I = C + B/D).
+// Mọi phép tính (L, M, mức mục tiêu, Q, R, vượt tanktop…) VẪN theo trạng thái K xét tại t0 như Excel (Mục 6.2).
+const SHIP_NOW = Object.freeze({ NOT_STARTED: 'Chưa bơm', PUMPING: 'Đang bơm', DONE: 'Đã bơm xong' });
+
+/** → { key: 'not_started'|'pumping'|'done', label, confirmed } ; confirmed = đã có giờ bơm xong thực tế (F) ≤ NOW. */
+function shipStatusNow(s, now) {
+  if (isNum(s.F) && s.F <= now) return { key: 'done', label: SHIP_NOW.DONE, confirmed: true };
+  if (!isNum(s.I)) return null;
+  if (isNum(s.C) && now < s.C) return { key: 'not_started', label: SHIP_NOW.NOT_STARTED, confirmed: false };
+  if (now < s.I) return { key: 'pumping', label: SHIP_NOW.PUMPING, confirmed: false };
+  return { key: 'done', label: SHIP_NOW.DONE, confirmed: false }; // quá giờ bơm xong dự kiến, chưa nhập F
+}
+
+/** Nhóm trạng thái tính toán K (xét tại t0) để so với trạng thái theo giờ hiện tại. */
+const statusKeyOfK = (K) => (K === SHIP.NOT_STARTED ? 'not_started' : K === SHIP.PUMPING ? 'pumping' : K ? 'done' : null);
 
 // ------------------------------------------------------------------ Kế hoạch sắp tới (6.1)
 function upcomingPlanText(intervals, now) {
@@ -1006,12 +1030,18 @@ function compute(input, now) {
     }
   }
   m.nextShip = next ? next.index : null;
+  // Tàu kế tiếp theo GIỜ HIỆN TẠI (hiển thị): tàu đang bơm hoặc sắp bơm sớm nhất, bỏ qua tàu đã bơm xong theo giờ.
+  let nextNow = null;
+  for (const s of m.ships) {
+    if (s.now && s.now.key !== 'done' && isNum(s.C) && (nextNow === null || s.C < nextNow.C)) nextNow = s;
+  }
+  m.nextShipNow = nextNow ? nextNow.index : null;
   m.check = dataCheck(m);
   m.lookup = lookupAt(input.lookupT, m);
   return m;
 }
 
-return { isNum, roundUp, roundDown, SHIP, PLAN, DEFAULT_CONFIG, HORIZON_DAYS, baremVolume, baremLevel, baremMarks, evaluatePlan, overlapDays, outflow, hoursOutside, sendoutAt, timeToDeplete, pumpedBy, assessmentLevel, evaluateShips, upcomingPlanText, lookupAt, stockAt, forecastSeries, dataCheck, compute };
+return { isNum, roundUp, roundDown, SHIP, PLAN, DEFAULT_CONFIG, HORIZON_DAYS, baremVolume, baremLevel, baremMarks, evaluatePlan, overlapDays, outflow, hoursOutside, sendoutAt, timeToDeplete, pumpedBy, assessmentLevel, evaluateShips, SHIP_NOW, shipStatusNow, statusKeyOfK, upcomingPlanText, lookupAt, stockAt, forecastSeries, dataCheck, compute };
 })();
 
 // ---- src/sheets-io.js
@@ -1686,7 +1716,7 @@ const __m_ui_app = (() => {
 // ui — dashboard CHỈ ĐỌC. Nguồn dữ liệu duy nhất: Google Sheet (VHV nhập trực tiếp trên Sheet).
 // Mọi con số lấy từ calc.compute(); Sheet được đọc lại mỗi 15 giây qua gviz (không cần khóa API).
 // =====================================================================================
-const { compute, forecastSeries, isNum, SHIP, baremVolume, baremLevel } = __m_calc;
+const { compute, forecastSeries, isNum, SHIP, baremVolume, baremLevel, statusKeyOfK } = __m_calc;
 const { nowSerial, toInputValue, fromInputValue } = __m_time;
 const { readSheet } = __m_sheets_io;
 const { SHEET, sheetEditUrl } = __m_config;
@@ -1980,7 +2010,7 @@ function renderKpis() {
     el.innerHTML = `<section class="card kpi kpi-wide"><h3>Chưa tính được</h3><p>${m.hasStock ? 'Mức bồn ngoài barem hoặc thiếu tỉ trọng / sendout nền ở dòng 5.' : 'Chưa có số liệu kho (sheet 2, dòng 5).'}</p><button class="btn btn-primary" data-act="stock">Mở Sheet – dòng 5</button></section>`;
     renderLookup(); return;
   }
-  const next = m.nextShip !== null ? m.ships[m.nextShip] : null;
+  const next = m.nextShipNow !== null ? m.ships[m.nextShipNow] : null; // theo giờ hiện tại
   const ns = m.nowStock;
   const sOn = m.sendoutNow !== m.S;
   const minOpH = m.minOp.status === 'ok' ? (m.minOp.t - m.now) * 24 : m.minOp.status === 'now' ? 0 : null;
@@ -2029,7 +2059,8 @@ function heroCard(m, s) {
     return `<section class="card kpi hero"><span class="eyebrow">Tàu kế tiếp</span><h2 class="hero-name">Chưa có tàu sắp nhập / đang nhập</h2>
       <p class="hero-meta">Nhập lịch tàu trên Google Sheet để tính MỨC MỤC TIÊU.</p><button class="btn btn-light" data-act="ships">Mở Sheet – lịch tàu</button></section>`;
   }
-  const NS = s.K === SHIP.NOT_STARTED;
+  // Bố cục theo trạng thái GIỜ HIỆN TẠI: chưa bơm → mức mục tiêu; đang bơm → tồn khi bơm xong / tanktop
+  const NS = s.now?.key === 'not_started' && isNum(s.target);
   const toStart = (s.C - m.now) * 24;
   const draw = isNum(s.target) ? m.nowStock.V - s.target : null;
   const drawMm = isNum(s.targetMm) && isNum(m.nowStock.mm) ? m.nowStock.mm - s.targetMm : null;
@@ -2044,7 +2075,7 @@ function heroCard(m, s) {
          <div><dt>Tồn dự kiến lúc bắt đầu bơm</dt><dd>${fmtN(s.Q, 0)} m³</dd></div>
          <div><dt>Vượt tanktop (+) / dư (−)</dt><dd class="${s.over > 0 ? 'txt-err' : 'txt-ok'}">${fmtSigned(s.over, 0)} m³</dd></div>
        </dl>`
-    : `<div class="hero-target"><div><span class="lbl">${esc(s.K.toUpperCase())}</span>
+    : `<div class="hero-target"><div><span class="lbl">${esc((s.now?.label || s.K).toUpperCase())} – dự kiến xong ${fmtDM(s.I)}</span>
          <div class="num hero-mid">${isNum(s.R) ? fmtN(s.R, 0) : '—'}<span class="unit-inline">m³ khi bơm xong</span></div></div></div>
        <dl class="hero-facts">
          <div><dt>Bơm xong</dt><dd>${fmtDT(s.I)}</dd></div>
@@ -2055,14 +2086,31 @@ function heroCard(m, s) {
     <div class="hero-head">
       <span class="eyebrow">Tàu kế tiếp</span>
       <h2 class="hero-name">${esc(s.displayName)}</h2>
-      <span class="pill pill-on-dark">${esc(s.K)}</span>
+      <span class="pill pill-on-dark" title="Theo giờ hiện tại">${esc(s.now?.label || s.K)}</span>
     </div>
     <p class="hero-meta">Bắt đầu bơm <b>${fmtDM(s.C)}</b>${NS && toStart > 0 ? ` (còn ${fmtDur(toStart)})` : ''} · ${fmtN(s.B, 0)} m³ @ ${fmtN(s.D, 0)} m³/h · rời cầu ${fmtDM(s.E)} · dư/trễ ${fmtSigned(s.J, 1)} giờ</p>
     ${main}
+    ${statusNote(m, s) ? `<p class="hero-note">${esc(statusNote(m, s))}</p>` : ''}
     <div class="assess assess-${s.level}" data-flash="assess">${assessIcon(s.level)} ${esc(s.X)}</div>
   </section>`;
 }
 const assessIcon = (l) => ({ red: '⛔', yellow: '⚠', green: '✓', done: '•' }[l] || '');
+
+/** Ghi chú khi trạng thái theo giờ hiện tại khác trạng thái tính toán (xét tại lần cập nhật kho, như Excel). */
+function statusNote(m, s) {
+  if (!s.now || !s.K || statusKeyOfK(s.K) === s.now.key) return '';
+  if (s.now.key === 'pumping') return `Theo giờ hiện tại tàu đang bơm (dự kiến xong ${fmtDM(s.I)}). Số liệu tính từ lần cập nhật kho ${fmtDM(m.t0)}; khi tàu xong: nhập giờ bơm xong thực tế và mức bồn mới trên Google Sheet.`;
+  if (s.now.key === 'done' && !s.now.confirmed) return `Theo giờ hiện tại tàu đã bơm xong (dự kiến ${fmtDM(s.I)}) nhưng chưa nhập giờ bơm xong thực tế – VHV nhập giờ xong (cột F sheet 3) và mức bồn mới (dòng 5) trên Google Sheet.`;
+  if (s.now.key === 'done') return `Đã bơm xong lúc ${fmtDM(s.F)} – VHV nhập mức bồn mới (dòng 5, thời điểm sau giờ bơm xong) trên Google Sheet.`;
+  return '';
+}
+/** Ô trạng thái theo giờ hiện tại (chữ + màu), kèm trạng thái tính toán trong chú thích. */
+function statusCell(s) {
+  if (!s.now) return `<span class="st st-none">${esc(s.K || '—')}</span>`;
+  const cls = s.now.key === 'not_started' ? 'blue' : s.now.key === 'pumping' ? 'yellow' : s.now.confirmed ? 'done' : 'yellow';
+  const extra = s.now.key === 'done' && !s.now.confirmed ? '<span class="badge badge-warn">chưa nhập giờ xong</span>' : '';
+  return `<span class="st st-${cls}" title="Theo giờ hiện tại. Trạng thái dùng để tính (tại lần cập nhật kho): ${esc(s.K)}">${esc(s.now.label)}</span>${extra}`;
+}
 
 function tankGauge(m, V) {
   const h = 96, w = 34, top = m.marks.last.volume;
@@ -2126,7 +2174,7 @@ function renderPrintView() {
   const logo = $('.logo-tile img')?.src || '';
   const now = new Date().toLocaleString('vi-VN', { hour12: false });
   if (!m || !S.input) { el.innerHTML = `<p>Chưa có số liệu để in (in lúc ${now}).</p>`; return; }
-  const next = m.nextShip !== null ? m.ships[m.nextShip] : null;
+  const next = m.nextShipNow !== null ? m.ships[m.nextShipNow] : null; // theo giờ hiện tại
   const ns = m.nowStock, L = m.lookup;
   const ships = m.ships.filter((s) => s.K).sort((a, b) => (a.C ?? Infinity) - (b.C ?? Infinity));
   const plan = m.plan.rows.filter((r) => r.status);
@@ -2158,7 +2206,7 @@ function renderPrintView() {
     <table class="pv-tbl"><thead><tr><th>Tàu</th><th class="n">Lượng (m³)</th><th>Bắt đầu bơm</th><th class="n">Rate</th><th>Bơm xong</th><th>Rời cầu</th><th class="n">Dư/trễ (h)</th><th>Trạng thái</th>
       <th class="n">Mục tiêu (mm)</th><th class="n">Mục tiêu (m³)</th><th class="n">Tồn lúc bắt đầu</th><th class="n">Vượt tanktop</th><th>Tanktop lúc</th><th class="n">Sendout nền tối thiểu</th><th>Đánh giá &amp; đề xuất</th></tr></thead>
       <tbody>${ships.length ? ships.map((s) => `<tr><td><b>${esc(s.displayName)}</b></td><td class="n">${fmtN(s.B, 0)}</td><td>${fmtDM(s.C)}</td><td class="n">${fmtN(s.D, 0)}</td><td>${fmtDM(s.I)}</td><td>${fmtDM(s.E)}</td>
-        <td class="n">${fmtSigned(s.J, 1)}</td><td>${esc(s.K)}</td><td class="n"><b>${fmtN(s.targetMm, 0)}</b></td><td class="n">${fmtN(s.target, 0)}</td><td class="n">${fmtN(s.Q, 0)}</td>
+        <td class="n">${fmtSigned(s.J, 1)}</td><td>${esc(s.now?.label || s.K)}${s.now?.key === 'done' && !s.now.confirmed ? ' (chưa nhập giờ xong)' : ''}</td><td class="n"><b>${fmtN(s.targetMm, 0)}</b></td><td class="n">${fmtN(s.target, 0)}</td><td class="n">${fmtN(s.Q, 0)}</td>
         <td class="n">${fmtSigned(s.over, 0)}</td><td>${fmtMaybeDT(s.T)}</td><td class="n">${fmtMaybe(s.U, 1)}</td><td class="lv-${s.level}">${esc(s.X)}</td></tr>`).join('') : '<tr><td colspan="15">Không có tàu.</td></tr>'}</tbody></table>
     <div class="pv-row2">
       <div><p class="pv-title">Kế hoạch thay đổi sendout</p>
@@ -2188,12 +2236,13 @@ function renderShips() {
   if (!rows.length) { el.innerHTML = `<tr><td colspan="21" class="empty-row">Chưa có tàu nào. <button class="btn btn-sm btn-primary" data-act="ships">Nhập tàu trên Google Sheet</button></td></tr>`; return; }
   el.innerHTML = rows.map((s) => {
     const lateCls = isNum(s.J) && (s.K === SHIP.NOT_STARTED || s.K === SHIP.PUMPING) ? (s.J < 0 ? 'txt-err' : s.J < m.cfg.K05 ? 'txt-warn' : '') : '';
-    return `<tr class="row-${s.level || 'none'} ${s.index === m.nextShip ? 'row-next' : ''}">
-      <th scope="row" class="sticky"><span class="ship-name">${esc(s.displayName || '(chưa có tên)')}</span>${s.index === m.nextShip ? '<span class="badge badge-blue">kế tiếp</span>' : ''}</th>
+    const note = statusNote(m, s);
+    return `<tr class="row-${s.level || 'none'} ${s.index === m.nextShipNow ? 'row-next' : ''}">
+      <th scope="row" class="sticky"><span class="ship-name">${esc(s.displayName || '(chưa có tên)')}</span>${s.index === m.nextShipNow ? '<span class="badge badge-blue">kế tiếp</span>' : ''}</th>
       <td class="n">${fmtN(s.B, 0)}</td><td>${fmtDM(s.C)}</td><td class="n">${fmtN(s.D, 0)}</td><td>${fmtDM(s.E)}</td>
       <td>${fmtDM(s.H)}</td><td>${fmtDM(s.I)}${isNum(s.F) ? ' <span class="badge badge-ok">thực tế</span>' : ''}</td>
       <td class="n ${lateCls}">${fmtSigned(s.J, 1)}</td>
-      <td><span class="st st-${statusKey(s.K)}">${esc(s.K || '—')}</span></td>
+      <td class="st-cell">${statusCell(s)}</td>
       <td class="n">${fmtN(s.L, 0)}</td><td class="n">${fmtN(s.M, 0)}</td>
       <td class="n strong">${isNum(s.targetMm) ? fmtN(s.targetMm, 0) : isNum(s.target) ? 'ngoài barem' : '—'}</td><td class="n">${fmtN(s.target, 0)}</td>
       <td class="n ${isNum(s.Q) && s.Q < m.V_MIN ? 'txt-warn' : ''}">${fmtN(s.Q, 0)}</td><td class="n">${fmtN(s.R, 0)}</td>
@@ -2201,11 +2250,10 @@ function renderShips() {
       <td>${fmtMaybeDT(s.T)}</td>
       <td class="n ${isNum(s.U) && s.U > m.cfg.K02 ? 'txt-err strong' : ''}">${fmtMaybe(s.U, 1)}</td>
       <td class="n">${fmtMaybe(s.V, 0)}</td><td class="n">${fmtMaybe(s.W, 0)}</td>
-      <td class="assess-cell"><span class="assess assess-${s.level || 'none'}">${assessIcon(s.level)} ${esc(s.X)}</span></td>
+      <td class="assess-cell">${note ? `<span class="status-note">⏱ ${esc(note)}</span>` : ''}<span class="assess assess-${s.level || 'none'}">${assessIcon(s.level)} ${esc(s.X)}</span></td>
     </tr>`;
   }).join('');
 }
-const statusKey = (k) => ({ [SHIP.DONE]: 'done', [SHIP.OVERDUE]: 'red', [SHIP.WAIT_LEVEL]: 'yellow', [SHIP.PUMPING]: 'yellow', [SHIP.NOT_STARTED]: 'blue' }[k] || 'none');
 
 function renderPlanTable() {
   const m = S.model;
@@ -2410,6 +2458,7 @@ function exportJournalCsv() {
 S.loadDemo = loadDemo;
 S.poll = (opt) => pollSheet(opt);
 S.serialNow = () => nowSerial();
+S.refresh = () => refresh();
 
 return { start };
 })();
